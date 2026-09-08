@@ -57,6 +57,43 @@ canvas {
     align-items: center;
 }
 
+/* Level select (jump straight to a milestone level, e.g. for testing progress) */
+#level-select {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    pointer-events: auto;
+}
+
+.level-select-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 255, 204, 0.1);
+    border: 1px solid rgba(0, 255, 204, 0.35);
+    color: #00ffcc;
+    font-size: 10px;
+    font-weight: bold;
+    font-family: inherit;
+    cursor: pointer;
+    padding: 0;
+    text-shadow: none;
+    transition: transform 0.1s ease, background 0.15s ease;
+}
+
+.level-select-btn:active {
+    transform: scale(0.9);
+    background: rgba(0, 255, 204, 0.3);
+}
+
+.level-select-btn.current {
+    background: #00ffcc;
+    color: #16213e;
+}
+
 /* Action Buttons Bar (Bottom / Side) */
 #action-bar {
     position: absolute;
@@ -179,6 +216,20 @@ canvas {
     border-radius: 20px;
     font-size: 14px;
     display: inline-block;
-    margin-bottom: 15px;
     border: 1px solid rgba(0, 255, 204, 0.3);
+}
+
+.level-preview-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 15px;
+    flex-wrap: wrap;
+}
+
+#menu-level-select {
+    display: flex;
+    gap: 6px;
+    align-items: center;
 }

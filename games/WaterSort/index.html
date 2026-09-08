@@ -15,7 +15,10 @@
     <div id="game-container">
         <!-- HUD -->
         <div id="hud">
-            <div id="level-title">Уровень 1</div>
+            <div class="hud-group">
+                <div id="level-title">Уровень 1</div>
+                <div id="level-select"></div>
+            </div>
             <div class="hud-group">
                 <div id="moves-count">🔄 0</div>
                 <div id="moves-limit-display" class="hidden">💣 0</div>
@@ -46,7 +49,10 @@
             <div class="modal-card">
                 <h1 id="menu-title">Water Sort</h1>
                 <p id="menu-desc">Сортируй разноцветную жидкость по пробиркам!</p>
-                <div id="current-level-preview" class="level-badge">Уровень 1</div>
+                <div class="level-preview-row">
+                    <div id="current-level-preview" class="level-badge">Уровень 1</div>
+                    <div id="menu-level-select"></div>
+                </div>
                 <button class="btn" id="start-btn">Играть</button>
             </div>
         </div>

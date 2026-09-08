@@ -7,7 +7,7 @@ const locales = {
         level: "Уровень ",
         moves: "Ходы: ",
         undo: "Отмена",
-        addTube: "+ Колба",
+        addTube: "Колба",
         revealHidden: "Открыть",
         unlockTube: "Разблок.",
         winTitle: "🎉 Уровень пройден!",
@@ -25,7 +25,7 @@ const locales = {
         level: "Level ",
         moves: "Moves: ",
         undo: "Undo",
-        addTube: "+ Tube",
+        addTube: "Tube",
         revealHidden: "Reveal",
         unlockTube: "Unlock",
         winTitle: "🎉 Level Complete!",
@@ -88,6 +88,43 @@ const txtUndo = document.getElementById('txt-undo');
 const txtAddTube = document.getElementById('txt-add-tube');
 const txtRevealHidden = document.getElementById('txt-reveal-hidden');
 const txtUnlockTube = document.getElementById('txt-unlock-tube');
+const levelSelectContainer = document.getElementById('level-select');
+const menuLevelSelectContainer = document.getElementById('menu-level-select');
+
+// Quick-jump level buttons. Today (before a real progress system exists) every
+// milestone is always selectable for testing; once player progress is persisted,
+// gate each button on `milestone <= highestUnlockedLevel` instead of always-enabled.
+const LEVEL_MILESTONES = [1, 5, 10, 15, 20, 25, 30];
+
+function renderLevelSelectButtons(container, onSelect) {
+    container.innerHTML = '';
+    for (const milestone of LEVEL_MILESTONES) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'level-select-btn';
+        btn.textContent = milestone;
+        btn.addEventListener('click', () => onSelect(milestone));
+        container.appendChild(btn);
+    }
+}
+
+// In-game HUD: jumping to a milestone starts it immediately.
+renderLevelSelectButtons(levelSelectContainer, (milestone) => {
+    currentLevelIndex = milestone - 1;
+    startLevel();
+});
+
+// Main menu: picking a milestone just selects it — the player still presses "Играть".
+renderLevelSelectButtons(menuLevelSelectContainer, (milestone) => {
+    currentLevelIndex = milestone - 1;
+    updateUILanguage();
+});
+
+function updateLevelSelectHighlight() {
+    document.querySelectorAll('.level-select-btn').forEach(btn => {
+        btn.classList.toggle('current', Number(btn.textContent) === currentLevelIndex + 1);
+    });
+}
 
 // Tube skin (transparent glass overlay drawn on top of the liquid layers).
 // Swappable for future skins (flask/glass/bottle/etc. in images/water2.png..water5.png).
@@ -180,6 +217,7 @@ function updateUILanguage() {
     }
 
     updateActionButtonsVisibility();
+    updateLevelSelectHighlight();
 }
 
 // Show the reveal/unlock ad-buttons only while their mechanic is actually present on screen
