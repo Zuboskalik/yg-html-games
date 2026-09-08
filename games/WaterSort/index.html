@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Water Sort / Сортировка по пробиркам</title>
+    
+    <!-- Yandex Games SDK v2 -->
+    <script src="https://yandex.ru/games/sdk/v2"></script>
+
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            -webkit-touch-callout: none;
+            touch-action: none;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+
+        canvas {
+            display: block;
+            touch-action: none;
+        }
+
+        /* HUD & Top Bar */
+        #hud {
+            position: absolute;
+            top: 15px;
+            left: 20px;
+            right: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 20px;
+            font-weight: bold;
+            z-index: 5;
+            pointer-events: none;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+        }
+
+        .hud-group {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        /* Action Buttons Bar (Bottom / Side) */
+        #action-bar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+            z-index: 5;
+        }
+
+        .action-btn {
+            background: rgba(255, 255, 255, 0.15);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            color: #fff;
+            padding: 10px 20px;
+            border-radius: 25px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            backdrop-filter: blur(5px);
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+        }
+
+        .action-btn:active {
+            transform: scale(0.95);
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .action-btn.reward-badge {
+            border-color: #ffcc00;
+            background: rgba(255, 204, 0, 0.2);
+            color: #ffcc00;
+        }
+
+        /* UI Overlays / Modals */
+        .ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(8px);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+            opacity: 1;
+            transition: opacity 0.3s ease;
+        }
+
+        .ui-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .modal-card {
+            background: #22253df0;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            padding: 30px;
+            border-radius: 20px;
+            text-align: center;
+            width: 90%;
+            max-width: 380px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+
+        .modal-card h1 {
+            font-size: 26px;
+            margin-bottom: 15px;
+            color: #00ffcc;
+        }
+
+        .modal-card p {
+            font-size: 16px;
+            color: #ccc;
+            margin-bottom: 25px;
+        }
+
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 14px;
+            margin-top: 12px;
+            font-size: 18px;
+            font-weight: bold;
+            color: #fff;
+            background: linear-gradient(135deg, #00b4db 0%, #0083b0 100%);
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0, 180, 219, 0.4);
+            transition: transform 0.1s ease;
+        }
+
+        .btn:active {
+            transform: scale(0.97);
+        }
+
+        .btn.btn-reward {
+            background: linear-gradient(135deg, #f7b733 0%, #fc4a1a 100%);
+            box-shadow: 0 4px 15px rgba(252, 74, 26, 0.4);
+        }
+
+        .btn.btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: none;
+        }
+
+        .level-badge {
+            background: rgba(0, 255, 204, 0.1);
+            color: #00ffcc;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 14px;
+            display: inline-block;
+            margin-bottom: 15px;
+            border: 1px solid rgba(0, 255, 204, 0.3);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <!-- HUD -->
+        <div id="hud">
+            <div id="level-title">Уровень 1</div>
+            <div class="hud-group">
+                <div id="moves-count">🔄 0</div>
+            </div>
+        </div>
+
+        <!-- Canvas -->
+        <canvas id="gameCanvas"></canvas>
+
+        <!-- Action Bar (Undo & Add Tube) -->
+        <div id="action-bar">
+            <button class="action-btn" id="undo-btn">
+                <span>↩️</span> <span id="txt-undo">Отмена</span>
+            </button>
+            <button class="action-btn reward-badge" id="add-tube-btn">
+                <span>🧪+</span> <span id="txt-add-tube">Колба</span>
+            </button>
+        </div>
+
+        <!-- Main Menu / Level Select Modal -->
+        <div id="main-menu" class="ui-overlay">
+            <div class="modal-card">
+                <h1>Water Sort</h1>
+                <p id="menu-desc">Сортируй разноцветную жидкость по пробиркам!</p>
+                <div id="current-level-preview" class="level-badge">Уровень 1</div>
+                <button class="btn" id="start-btn">Играть</button>
+            </div>
+        </div>
+
+        <!-- Victory Modal -->
+        <div id="victory-modal" class="ui-overlay hidden">
+            <div class="modal-card">
+                <h1>🎉 Уровень пройден!</h1>
+                <p id="victory-desc">Отличная работа! Все цвета аккуратно отсортированы.</p>
+                <button class="btn" id="next-level-btn">Следующий уровень</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Localization
+        const locales = {
+            ru: {
+                title: "Water Sort",
+                desc: "Сортируй разноцветную жидкость по пробиркам!",
+                play: "Играть",
+                level: "Уровень ",
+                moves: "Ходы: ",
+                undo: "Отмена",
+                addTube: "+ Колба",
+                winTitle: "🎉 Уровень пройден!",
+                winDesc: "Отличная работа! Все цвета аккуратно отсортированы.",
+                nextLevel: "Следующий уровень",
+                rewardAdError: "Реклама недоступна или была закрыта"
+            },
+            en: {
+                title: "Water Sort",
+                desc: "Sort the colored liquids into separate tubes!",
+                play: "Play",
+                level: "Level ",
+                moves: "Moves: ",
+                undo: "Undo",
+                addTube: "+ Tube",
+                winTitle: "🎉 Level Complete!",
+                winDesc: "Great job! All colors are perfectly sorted.",
+                nextLevel: "Next Level",
+                rewardAdError: "Ad unavailable or closed early"
+            }
+        };
+
+        let currentLang = 'ru';
+        let yandexSDK = null;
+        let player = null;
+        let currentLevelIndex = 0;
+        let movesCount = 0;
+
+        // Game state
+        let tubes = []; // Array of tubes, each tube is an array of color indices (e.g. [1, 2, 1, 2])
+        let history = []; // Stack of previous states for Undo
+        let selectedTubeIndex = null;
+        let animating = false;
+        
+        // Pour animation variables
+        let pouringData = null; // { fromIndex, toIndex, color, progress, startY, endY, ... }
+
+        // Colors palette (vibrant & contrast)
+        const COLORS = [
+            '#FF3366', // 0: Red / Pink
+            '#33CCFF', // 1: Cyan / Blue
+            '#33FF66', // 2: Green
+            '#FFCC00', // 3: Yellow
+            '#9933FF', // 4: Purple
+            '#FF6600', // 5: Orange
+            '#00FFCC', // 6: Mint
+            '#FF99FF', // 7: Light Magenta
+            '#6666FF', // 8: Indigo
+            '#CCFF33'  // 9: Lime
+        ];
+
+        // DOM Elements
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const mainMenu = document.getElementById('main-menu');
+        const victoryModal = document.getElementById('victory-modal');
+        const startBtn = document.getElementById('start-btn');
+        const nextLevelBtn = document.getElementById('next-level-btn');
+        const undoBtn = document.getElementById('undo-btn');
+        const addTubeBtn = document.getElementById('add-tube-btn');
+        const levelTitle = document.getElementById('level-title');
+        const movesCountDisplay = document.getElementById('moves-count');
+        const menuDesc = document.getElementById('menu-desc');
+        const currentLevelPreview = document.getElementById('current-level-preview');
+        const txtUndo = document.getElementById('txt-undo');
+        const txtAddTube = document.getElementById('txt-add-tube');
+
+        // Prevent default mobile gestures
+        document.addEventListener('contextmenu', e => e.preventDefault());
+        document.addEventListener('keydown', e => {
+            if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+                e.preventDefault();
+            }
+        });
+
+        // Resize Canvas
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // SDK Initialization
+        document.addEventListener('DOMContentLoaded', () => {
+            if (typeof YaGames !== 'undefined') {
+                YaGames.init().then(ysdk => {
+                    yandexSDK = ysdk;
+                    currentLang = ysdk.environment.i18n?.lang?.startsWith('en') ? 'en' : 'ru';
+                    updateUILanguage();
+
+                    ysdk.on('game_api_pause', () => { /* Pause audio/game */ });
+                    ysdk.on('game_api_resume', () => { /* Resume audio/game */ });
+
+                    ysdk.getPlayer().then(_player => {
+                        player = _player;
+                        loadProgress();
+                    }).catch(err => console.log('Offline player', err));
+
+                    ysdk.features.LoadingAPI?.ready();
+                }).catch(err => {
+                    console.warn('SDK Init error, running offline', err);
+                    updateUILanguage();
+                });
+            } else {
+                updateUILanguage();
+            }
+        });
+
+        function updateUILanguage() {
+            const loc = locales[currentLang] || locales.ru;
+            const menuTitleEl = document.getElementById('menu-title');
+            if (menuTitleEl) menuTitleEl.textContent = loc.title;
+            if (menuDesc) menuDesc.textContent = loc.desc;
+            if (startBtn) startBtn.textContent = loc.play;
+            if (nextLevelBtn) nextLevelBtn.textContent = loc.nextLevel;
+            if (txtUndo) txtUndo.textContent = loc.undo;
+            if (txtAddTube) txtAddTube.textContent = loc.addTube;
+            if (currentLevelPreview) currentLevelPreview.textContent = loc.level + (currentLevelIndex + 1);
+            if (levelTitle) levelTitle.textContent = loc.level + (currentLevelIndex + 1);
+            if (movesCountDisplay) movesCountDisplay.textContent = `🔄 ${movesCount}`;
+        }
+
+        async function loadProgress() {
+            if (!player) return;
+            try {
+                const data = await player.getData();
+                if (data && typeof data.level === 'number') {
+                    currentLevelIndex = data.level;
+                    updateUILanguage();
+                }
+            } catch (e) {
+                console.error('Failed to load progress', e);
+            }
+        }
+
+        async function saveProgress() {
+            if (!player) return;
+            try {
+                // Check if player.setData is supported (in some offline/file mode emulators it might not be fully functional or throws security)
+                if (typeof player.setData === 'function') {
+                    await player.setData({ level: currentLevelIndex }, true);
+                }
+            } catch (e) {
+                console.error('Failed to save progress', e);
+            }
+        }
+
+        // Level Generator System
+        // Easily changeable: number of colors, capacity per tube (4 layers), and empty tubes.
+        function generateLevel(levelIdx) {
+            const capacity = 4;
+            let numColors = Math.min(3 + Math.floor(levelIdx / 3), COLORS.length);
+            let numEmpty = 2;
+
+            // Generate guaranteed randomized shuffled color blocks distributed across non-empty tubes
+            let totalBlocks = numColors * capacity;
+            let colorPool = [];
+            for (let c = 0; c < numColors; c++) {
+                for (let i = 0; i < capacity; i++) {
+                    colorPool.push(c);
+                }
+            }
+            // Fisher-Yates shuffle
+            for (let i = colorPool.length - 1; i > 0; i--) {
+                let j = Math.floor(Math.random() * (i + 1));
+                [colorPool[i], colorPool[j]] = [colorPool[j], colorPool[i]];
+            }
+
+            let currentTubes = [];
+            for (let c = 0; c < numColors; c++) {
+                currentTubes.push(colorPool.slice(c * capacity, (c + 1) * capacity));
+            }
+            for (let i = 0; i < numEmpty; i++) {
+                currentTubes.push([]);
+            }
+
+            // Ensure not already solved at start
+            if (isLevelSolved(currentTubes)) {
+                // Swap two elements to break solved state
+                let temp = currentTubes[0][0];
+                currentTubes[0][0] = currentTubes[1][0];
+                currentTubes[1][0] = temp;
+            }
+
+            return currentTubes;
+        }
+
+        function startLevel() {
+            tubes = generateLevel(currentLevelIndex);
+            history = [];
+            selectedTubeIndex = null;
+            movesCount = 0;
+            animating = false;
+            pouringData = null;
+            updateUILanguage();
+            mainMenu.classList.add('hidden');
+            victoryModal.classList.add('hidden');
+        }
+
+        // Check if level is solved: every non-empty tube must contain exactly 4 blocks of the EXACT SAME color
+        function isLevelSolved(currentTubes) {
+            let activeTubesCount = 0;
+            for (let tube of currentTubes) {
+                if (tube.length === 0) continue;
+                if (tube.length !== 4) return false;
+                let firstColor = tube[0];
+                for (let color of tube) {
+                    if (color !== firstColor) return false;
+                }
+                activeTubesCount++;
+            }
+            return activeTubesCount > 0;
+        }
+
+        // Pour validation & logic
+        function canPour(fromIdx, toIdx) {
+            if (fromIdx === toIdx) return false;
+            let fromTube = tubes[fromIdx];
+            let toTube = tubes[toIdx];
+            if (fromTube.length === 0) return false;
+            if (toTube.length >= 4) return false;
+
+            let topColor = fromTube[fromTube.length - 1];
+            if (toTube.length === 0) return true;
+            let targetTopColor = toTube[toTube.length - 1];
+            return topColor === targetTopColor;
+        }
+
+        function executePour(fromIdx, toIdx) {
+            // Save state for undo
+            history.push(tubes.map(t => [...t]));
+
+            let fromTube = tubes[fromIdx];
+            let toTube = tubes[toIdx];
+            let topColor = fromTube[fromTube.length - 1];
+
+            // Count how many blocks of this color to move
+            let count = 0;
+            for (let i = fromTube.length - 1; i >= 0; i--) {
+                if (fromTube[i] === topColor && toTube.length + count < 4) {
+                    count++;
+                } else {
+                    break;
+                }
+            }
+
+            // Setup animation
+            animating = true;
+            pouringData = {
+                fromIdx,
+                toIdx,
+                color: topColor,
+                count,
+                progress: 0
+            };
+
+            let movingBlock = [];
+            for (let i = 0; i < count; i++) {
+                movingBlock.push(fromTube.pop());
+            }
+            pouringData.movingBlock = movingBlock;
+
+            movesCount++;
+            updateUILanguage();
+        }
+
+        // Rewarded Ad for Undo
+        undoBtn.addEventListener('click', () => {
+            if (animating || history.length === 0) return;
+            
+            // Call Rewarded Ad as requested for SDK & monetization
+            if (yandexSDK) {
+                yandexSDK.adv.showRewardedVideo({
+                    callbacks: {
+                        onRewarded: () => {
+                            tubes = history.pop();
+                            selectedTubeIndex = null;
+                            movesCount = Math.max(0, movesCount - 1);
+                            updateUILanguage();
+                        },
+                        onError: () => {
+                            // Fallback if ad fails: allow undo anyway or show message
+                            tubes = history.pop();
+                            selectedTubeIndex = null;
+                            movesCount = Math.max(0, movesCount - 1);
+                            updateUILanguage();
+                        }
+                    }
+                });
+            } else {
+                // Offline fallback
+                tubes = history.pop();
+                selectedTubeIndex = null;
+                movesCount = Math.max(0, movesCount - 1);
+                updateUILanguage();
+            }
+        });
+
+        // Rewarded Ad for Adding Empty Tube
+        addTubeBtn.addEventListener('click', () => {
+            if (animating) return;
+
+            if (yandexSDK) {
+                yandexSDK.adv.showRewardedVideo({
+                    callbacks: {
+                        onRewarded: () => {
+                            history.push(tubes.map(t => [...t]));
+                            tubes.push([]); // Add empty tube
+                            selectedTubeIndex = null;
+                            updateUILanguage();
+                        },
+                        onError: () => {
+                            history.push(tubes.map(t => [...t]));
+                            tubes.push([]);
+                            selectedTubeIndex = null;
+                            updateUILanguage();
+                        }
+                    }
+                });
+            } else {
+                history.push(tubes.map(t => [...t]));
+                tubes.push([]);
+                selectedTubeIndex = null;
+                updateUILanguage();
+            }
+        });
+
+        // Canvas Click / Tap Handling
+        canvas.addEventListener('pointerdown', (e) => {
+            if (animating || !mainMenu.classList.contains('hidden') || !victoryModal.classList.contains('hidden')) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            const layout = getTubeLayout();
+            for (let i = 0; i < tubes.length; i++) {
+                let pos = layout.tubesPos[i];
+                if (x >= pos.x - layout.tubeWidth / 2 && x <= pos.x + layout.tubeWidth / 2 &&
+                    y >= pos.y && y <= pos.y + layout.tubeHeight) {
+                    
+                    if (selectedTubeIndex === null) {
+                        if (tubes[i].length > 0) {
+                            selectedTubeIndex = i;
+                        }
+                    } else {
+                        if (selectedTubeIndex === i) {
+                            selectedTubeIndex = null; // deselect
+                        } else {
+                            if (canPour(selectedTubeIndex, i)) {
+                                let from = selectedTubeIndex;
+                                let to = i;
+                                selectedTubeIndex = null;
+                                executePour(from, to);
+                            } else {
+                                selectedTubeIndex = tubes[i].length > 0 ? i : null;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        });
+
+        // Calculate responsive tube positions
+        function getTubeLayout() {
+            const numTubes = tubes.length;
+            const maxPerRow = numTubes > 6 ? Math.ceil(numTubes / 2) : numTubes;
+            const rows = numTubes > 6 ? 2 : 1;
+
+            const tubeWidth = Math.min(canvas.width / (maxPerRow + 1) * 0.6, 70);
+            const tubeHeight = tubeWidth * 3.2;
+            const spacingX = tubeWidth * 1.4;
+            const spacingY = tubeHeight * 1.3;
+
+            const startX = (canvas.width - (Math.min(numTubes, maxPerRow) * spacingX)) / 2 + tubeWidth / 2;
+            const startY = (canvas.height - (rows * spacingY)) / 2 + tubeHeight * 0.2;
+
+            let tubesPos = [];
+            for (let i = 0; i < numTubes; i++) {
+                let row = Math.floor(i / maxPerRow);
+                let col = i % maxPerRow;
+                let countInRow = row === rows - 1 ? numTubes - row * maxPerRow : maxPerRow;
+                let rowStartX = (canvas.width - (countInRow * spacingX)) / 2 + tubeWidth / 2;
+
+                tubesPos.push({
+                    x: rowStartX + col * spacingX,
+                    y: startY + row * spacingY
+                });
+            }
+
+            return { tubesPos, tubeWidth, tubeHeight };
+        }
+
+        // Render loop
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const layout = getTubeLayout();
+            const { tubesPos, tubeWidth, tubeHeight } = layout;
+            const wallWidth = Math.max(4, tubeWidth * 0.08);
+            const radius = wallWidth * 1.5;
+
+            for (let i = 0; i < tubes.length; i++) {
+                let pos = tubesPos[i];
+                let isSelected = (selectedTubeIndex === i);
+                let bounceY = isSelected ? -15 : 0;
+
+                ctx.save();
+                ctx.translate(pos.x, pos.y + bounceY);
+
+                // If currently pouring TO or FROM this tube during animation, handle special rendering if needed
+                let tubeData = tubes[i];
+
+                // Draw liquid layers inside tube
+                let innerWidth = tubeWidth - wallWidth * 2;
+                let innerHeight = tubeHeight - wallWidth * 2;
+                let layerHeight = innerHeight / 4;
+
+                ctx.save();
+                // Clip to tube interior shape for rounded liquid corners at bottom
+                ctx.beginPath();
+                ctx.roundRect(-innerWidth / 2, wallWidth, innerWidth, innerHeight - wallWidth / 2, [0, 0, radius, radius]);
+                ctx.clip();
+
+                for (let layerIdx = 0; layerIdx < tubeData.length; layerIdx++) {
+                    let colorIdx = tubeData[layerIdx];
+                    let yPos = tubeHeight - wallWidth - (layerIdx + 1) * layerHeight;
+                    ctx.fillStyle = COLORS[colorIdx] || '#fff';
+                    ctx.fillRect(-innerWidth / 2, yPos, innerWidth, layerHeight + 1); // +1 to prevent subpixel gaps
+                }
+                ctx.restore();
+
+                // Draw Tube Glass Outline / Container
+                ctx.strokeStyle = isSelected ? '#00ffcc' : 'rgba(255, 255, 255, 0.6)';
+                ctx.lineWidth = wallWidth;
+                ctx.beginPath();
+                // U shape: left wall, bottom curve/line, right wall
+                ctx.moveTo(-tubeWidth / 2, 0);
+                ctx.lineTo(-tubeWidth / 2, tubeHeight - radius);
+                ctx.arcTo(-tubeWidth / 2, tubeHeight, -tubeWidth / 2 + radius, tubeHeight, radius);
+                ctx.lineTo(tubeWidth / 2 - radius, tubeHeight);
+                ctx.arcTo(tubeWidth / 2, tubeHeight, tubeWidth / 2, tubeHeight - radius, radius);
+                ctx.lineTo(tubeWidth / 2, 0);
+                ctx.stroke();
+
+                // Glass highlight effect
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+                ctx.lineWidth = wallWidth * 0.4;
+                ctx.beginPath();
+                ctx.moveTo(-tubeWidth / 2 + wallWidth * 1.2, wallWidth * 2);
+                ctx.lineTo(-tubeWidth / 2 + wallWidth * 1.2, tubeHeight - radius * 1.5);
+                ctx.stroke();
+
+                ctx.restore();
+            }
+
+            // Draw pouring animation arc/stream if animating
+            if (animating && pouringData) {
+                updateAndDrawPouring(layout);
+            }
+        }
+
+        function updateAndDrawPouring(layout) {
+            const { tubesPos, tubeWidth, tubeHeight } = layout;
+            let fromPos = tubesPos[pouringData.fromIdx];
+            let toPos = tubesPos[pouringData.toIdx];
+
+            pouringData.progress += 0.08; // Animation speed
+            if (pouringData.progress >= 1) {
+                // Finish pouring: push moving blocks to target tube
+                let toTube = tubes[pouringData.toIdx];
+                for (let color of pouringData.movingBlock) {
+                    toTube.push(color);
+                }
+                animating = false;
+                pouringData = null;
+
+                // Check victory condition
+                if (isLevelSolved(tubes)) {
+                    triggerVictory();
+                }
+            } else {
+                // Draw stream of liquid flowing from source to target
+                let p = pouringData.progress;
+                let startX = fromPos.x;
+                let startY = fromPos.y + tubeHeight * 0.1;
+                let endX = toPos.x;
+                let endY = toPos.y + tubeHeight * 0.1;
+
+                let currX = startX + (endX - startX) * p;
+                let currY = startY + (endY - startY) * p - Math.sin(p * Math.PI) * 40;
+
+                ctx.fillStyle = COLORS[pouringData.color];
+                ctx.beginPath();
+                ctx.arc(currX, currY, tubeWidth * 0.3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function triggerVictory() {
+            victoryModal.classList.remove('hidden');
+            
+            // Show Interstitial Ad and save progress
+            if (yandexSDK) {
+                yandexSDK.adv.showFullscreenAdv({
+                    callbacks: {
+                        onClose: () => {},
+                        onError: () => {}
+                    }
+                });
+            }
+        }
+
+        nextLevelBtn.addEventListener('click', () => {
+            currentLevelIndex++;
+            saveProgress();
+            startLevel();
+        });
+
+        startBtn.addEventListener('click', () => {
+            startLevel();
+        });
+
+        // Main Game Loop
+        function gameLoop() {
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+        requestAnimationFrame(gameLoop);
+
+    </script>
+</body>
+</html>
