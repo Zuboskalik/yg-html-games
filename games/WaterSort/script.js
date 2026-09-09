@@ -16,7 +16,10 @@ const locales = {
         failTitle: "💥 Ходы закончились!",
         failDesc: "Время бомбы истекло. Хотите продолжить или начать заново?",
         reviveBtn: "🎁 До +15 ходов (Реклама)",
-        restart: "Заново"
+        restart: "Заново",
+        lockHintSingular: "Заполните полностью ещё {n} колбу, чтобы снять замок",
+        lockHintPlural: "Заполните полностью ещё {n} колбы, чтобы снять замок",
+        lockUnlockedToast: "🔓 Замок снят!"
     },
     en: {
         title: "Water Sort",
@@ -34,7 +37,10 @@ const locales = {
         failTitle: "💥 Out of Moves!",
         failDesc: "Bomb timer expired. Watch ad to get +15 moves or restart?",
         reviveBtn: "🎁 +15 Moves (Watch Ad)",
-        restart: "Restart"
+        restart: "Restart",
+        lockHintSingular: "Fully sort {n} more tube to release the lock",
+        lockHintPlural: "Fully sort {n} more tubes to release the lock",
+        lockUnlockedToast: "🔓 Lock released!"
     }
 };
 
@@ -54,6 +60,8 @@ let pouringData = null;
 
 let tubeLocks = []; // boolean array
 let moveLimit = null; // null or remaining moves
+let requiredCompletedTubes = 0; // how many OTHER tubes must be fully sorted to release the locks
+let levelNumColors = 0; // color count of the current level, used to gate the pattern overlay
 
 // Properly store original hidden colors during generation
 let hiddenColorMap = new Map(); // tubeIndex -> array of hidden colors
@@ -64,6 +72,25 @@ const COLORS = [
     '#9933FF', '#FF6600', '#00FFCC', '#FF99FF',
     '#6666FF', '#CCFF33'
 ];
+
+// Colors that read as too similar once many are on screen at once (cyan/green/teal/blue) get a
+// small shimmering emoji overlay instead of relying on hue alone to distinguish them.
+const PATTERNED_COLORS = new Map([
+    [1, '❄️'],
+    [2, '🌸'],
+    [6, '💠'],
+    [8, '⭐']
+]);
+const PATTERN_MIN_COLORS = 7; // only decorate once the board is crowded enough to actually confuse
+
+// Difficulty tuning
+const MAX_TUBES = 12;
+const CAP_LEVEL_IDX = 21; // first levelIdx where numColors reaches COLORS.length (level 22)
+const MOVE_ESTIMATE_PER_COLOR = 3;
+const MOVE_ESTIMATE_PER_HIDDEN_LAYER = 1.5;
+const MOVE_ESTIMATE_PER_LOCK = 2;
+const MOVE_LIMIT_MULTIPLIER = 2;
+const MOVE_LIMIT_ROUND_TO = 5;
 
 // DOM Elements
 const canvas = document.getElementById('gameCanvas');
@@ -90,6 +117,7 @@ const txtRevealHidden = document.getElementById('txt-reveal-hidden');
 const txtUnlockTube = document.getElementById('txt-unlock-tube');
 const levelSelectContainer = document.getElementById('level-select');
 const menuLevelSelectContainer = document.getElementById('menu-level-select');
+const lockHintToast = document.getElementById('lockHintToast');
 
 // Quick-jump level buttons. Today (before a real progress system exists) every
 // milestone is always selectable for testing; once player progress is persisted,
@@ -258,11 +286,73 @@ async function saveProgress() {
     }
 }
 
-// Level Generator with Level 3+ Hidden Layers and Level 7+ Locks & Level 10+ Bombs
+function shuffleArray(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+        let j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+}
+
+// Which tube indices get hidden layers, favoring even indices first (matches the original
+// "every other tube" pattern), extended to however many tubes the current tier needs.
+function computeHiddenTubeIndices(numColors, hiddenTubeCount) {
+    const evens = [], odds = [];
+    for (let c = 0; c < numColors; c++) (c % 2 === 0 ? evens : odds).push(c);
+    return evens.concat(odds).slice(0, hiddenTubeCount);
+}
+
+// The shuffle-then-chunk step below can trap some of a color's units inside a locked tube,
+// making that color impossible to ever fully sort while locked. Since the lock condition
+// requires fully sorting `requiredCompletedTubes` OTHER colors, we must guarantee that many
+// colors have ALL 4 of their units outside every locked tube. Swap any "safe" color unit that
+// landed in a locked tube for a non-safe unit from an unlocked tube. Must run on raw color
+// integers, before hidden-layer masking turns any slots into -1.
+function ensureSafeColorsOutsideLocks(currentTubes, lockedIndices, safeColors) {
+    for (const lockedIdx of lockedIndices) {
+        const tube = currentTubes[lockedIdx];
+        for (let slot = 0; slot < tube.length; slot++) {
+            if (!safeColors.has(tube[slot])) continue;
+            outer:
+            for (let otherIdx = 0; otherIdx < currentTubes.length; otherIdx++) {
+                if (lockedIndices.has(otherIdx)) continue;
+                const otherTube = currentTubes[otherIdx];
+                for (let otherSlot = 0; otherSlot < otherTube.length; otherSlot++) {
+                    if (!safeColors.has(otherTube[otherSlot])) {
+                        [tube[slot], otherTube[otherSlot]] = [otherTube[otherSlot], tube[slot]];
+                        break outer;
+                    }
+                }
+            }
+        }
+    }
+}
+
+function computeMoveLimit(levelIdx, numColors, hiddenLayerCount, lockedTubeCount) {
+    if (levelIdx < 9) return null;
+    const estimate = numColors * MOVE_ESTIMATE_PER_COLOR
+        + hiddenLayerCount * MOVE_ESTIMATE_PER_HIDDEN_LAYER
+        + lockedTubeCount * MOVE_ESTIMATE_PER_LOCK;
+    return Math.ceil((estimate * MOVE_LIMIT_MULTIPLIER) / MOVE_LIMIT_ROUND_TO) * MOVE_LIMIT_ROUND_TO;
+}
+
+// Level Generator with Level 3+ Hidden Layers and Level 7+ Locks & Level 10+ Bombs.
+// Difficulty keeps escalating past the point where numColors saturates at COLORS.length
+// (level 22+, already at the MAX_TUBES cap) via more/deeper hidden layers and more locks,
+// gated by `tier` — a step that advances every 4 levels past CAP_LEVEL_IDX.
 function generateLevel(levelIdx) {
     const capacity = 4;
-    let numColors = Math.min(3 + Math.floor(levelIdx / 3), COLORS.length);
-    let numEmpty = 2;
+    const numEmpty = 2;
+    let numColors = Math.min(3 + Math.floor(levelIdx / 3), COLORS.length, MAX_TUBES - numEmpty);
+    levelNumColors = numColors;
+
+    const hiddenEnabled = levelIdx >= 2;
+    const lockEnabled = levelIdx >= 6;
+    const tier = Math.floor(Math.max(0, levelIdx - CAP_LEVEL_IDX) / 4);
+
+    const hiddenLayersPerTube = hiddenEnabled ? (tier >= 2 ? 3 : 2) : 0;
+    const hiddenTubeCount = hiddenEnabled ? Math.min(numColors, Math.ceil(numColors / 2) + tier) : 0;
+    const lockedTubeCount = lockEnabled ? Math.min(3, 1 + tier, numColors - 1) : 0;
 
     let colorPool = [];
     for (let c = 0; c < numColors; c++) {
@@ -270,44 +360,46 @@ function generateLevel(levelIdx) {
             colorPool.push(c);
         }
     }
-    // Fisher-Yates shuffle
-    for (let i = colorPool.length - 1; i > 0; i--) {
-        let j = Math.floor(Math.random() * (i + 1));
-        [colorPool[i], colorPool[j]] = [colorPool[j], colorPool[i]];
-    }
+    shuffleArray(colorPool);
 
     let currentTubes = [];
-    hiddenColorMap.clear();
-
     for (let c = 0; c < numColors; c++) {
-        let tubeColors = colorPool.slice(c * capacity, (c + 1) * capacity);
-
-        // From level 3+, introduce "Hidden" mystery layers (bottom 2 layers)
-        if (levelIdx >= 2 && c % 2 === 0) {
-            hiddenColorMap.set(c, [tubeColors[0], tubeColors[1]]);
-            tubeColors[0] = -1;
-            tubeColors[1] = -1;
-        }
-
-        currentTubes.push(tubeColors);
+        currentTubes.push(colorPool.slice(c * capacity, (c + 1) * capacity));
     }
+
+    // Locks: pick unique random tube indices, then reserve enough "safe" colors that the
+    // unlock condition (fully sort `requiredCompletedTubes` other tubes) stays achievable.
+    tubeLocks = new Array(numColors).fill(false);
+    const lockedIndices = new Set(shuffleArray([...Array(numColors).keys()]).slice(0, lockedTubeCount));
+    for (const idx of lockedIndices) tubeLocks[idx] = true;
+
+    requiredCompletedTubes = lockedTubeCount === 0 ? 0
+        : Math.min(lockedTubeCount, Math.max(1, numColors - lockedTubeCount));
+
+    if (requiredCompletedTubes > 0) {
+        const safeColors = new Set(shuffleArray([...Array(numColors).keys()]).slice(0, requiredCompletedTubes));
+        ensureSafeColorsOutsideLocks(currentTubes, lockedIndices, safeColors);
+    }
+
+    // Hidden mystery layers, applied after the lock repair pass so -1 placeholders are never
+    // treated as swappable color units.
+    hiddenColorMap.clear();
+    if (hiddenEnabled) {
+        for (const c of computeHiddenTubeIndices(numColors, hiddenTubeCount)) {
+            const tubeColors = currentTubes[c];
+            const hidden = tubeColors.slice(0, hiddenLayersPerTube);
+            hiddenColorMap.set(c, hidden);
+            for (let i = 0; i < hiddenLayersPerTube; i++) tubeColors[i] = -1;
+        }
+    }
+
     for (let i = 0; i < numEmpty; i++) {
         currentTubes.push([]);
+        tubeLocks.push(false);
     }
 
-    // Tube locks setup for Level 7+
-    tubeLocks = new Array(currentTubes.length).fill(false);
-    if (levelIdx >= 6) {
-        let lockTarget = Math.floor(Math.random() * numColors);
-        tubeLocks[lockTarget] = true;
-    }
-
-    // Move limits setup for Level 10+
-    if (levelIdx >= 9) {
-        moveLimit = 30 + Math.max(0, (15 - levelIdx) * 2);
-    } else {
-        moveLimit = null;
-    }
+    const hiddenLayerCount = hiddenTubeCount * hiddenLayersPerTube;
+    moveLimit = computeMoveLimit(levelIdx, numColors, hiddenLayerCount, lockedTubeCount);
 
     return currentTubes;
 }
@@ -319,6 +411,8 @@ function startLevel() {
     animating = false;
     pouringData = null;
     movesCount = 0;
+    lockHintToast.classList.remove('visible');
+    clearTimeout(lockHintTimer);
     updateUILanguage();
     mainMenu.classList.add('hidden');
     victoryModal.classList.add('hidden');
@@ -365,6 +459,36 @@ function snapshotState() {
         moves: movesCount,
         limit: moveLimit
     };
+}
+
+// Locked tubes are released for free once the player fully sorts enough OTHER tubes —
+// counted here excluding locked tubes themselves, since their contents are frozen, not
+// something the player achieved.
+function countCompletedTubes() {
+    return tubes.filter((tube, i) => !tubeLocks[i] && isTubeComplete(tube)).length;
+}
+
+function checkLockConditions() {
+    if (!anyLockedTubesPresent()) return;
+    if (countCompletedTubes() >= requiredCompletedTubes) {
+        tubeLocks = tubeLocks.map(() => false);
+        showToast(locales[currentLang].lockUnlockedToast);
+        updateUILanguage();
+    }
+}
+
+let lockHintTimer = null;
+function showToast(text, duration = 2200) {
+    lockHintToast.textContent = text;
+    lockHintToast.classList.add('visible');
+    clearTimeout(lockHintTimer);
+    lockHintTimer = setTimeout(() => lockHintToast.classList.remove('visible'), duration);
+}
+
+function showLockHint(remaining) {
+    const loc = locales[currentLang] || locales.ru;
+    const key = remaining === 1 ? 'lockHintSingular' : 'lockHintPlural';
+    showToast(loc[key].replace('{n}', remaining));
 }
 
 // Runs `onDone` after a rewarded ad completes (or immediately offline/on error) — rewards
@@ -506,9 +630,12 @@ canvas.addEventListener('pointerdown', (e) => {
         if (x >= pos.x - layout.tubeWidth / 2 && x <= pos.x + layout.tubeWidth / 2 &&
             y >= pos.y && y <= pos.y + layout.tubeHeight) {
 
-            // If tube is locked, clicking it attempts to unlock via ad / key
+            // Locked tubes are released by fully sorting other tubes first (see
+            // checkLockConditions, called after every pour); clicking one before that
+            // condition is met just shows a hint — no ad, no free unlock on click.
             if (tubeLocks[i]) {
-                showRewardedThen(() => { tubeLocks[i] = false; updateUILanguage(); });
+                const remaining = Math.max(1, requiredCompletedTubes - countCompletedTubes());
+                showLockHint(remaining);
                 return;
             }
 
@@ -569,6 +696,49 @@ function isTubeComplete(tube) {
     return tube.every(color => color === firstColor);
 }
 
+// Tiles a small shimmering emoji across a liquid layer, so visually-similar colors
+// (PATTERNED_COLORS) stay distinguishable even when their hues are close.
+function drawShimmerPattern(emoji, x, y, w, h, elapsed, tubeIdx, layerIdx) {
+    const fontSize = Math.max(10, h * 0.6);
+    const stepX = fontSize * 1.1;
+    const phase = tubeIdx * 0.7 + layerIdx * 1.3; // desyncs tubes so they don't pulse in lockstep
+    const shimmer = 0.35 + 0.25 * Math.sin(elapsed / 600 + phase);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+    ctx.globalAlpha = shimmer;
+    ctx.font = `${fontSize}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let px = x + stepX / 2; px < x + w; px += stepX) {
+        ctx.fillText(emoji, px, y + h / 2);
+    }
+    ctx.restore();
+}
+
+// Cached diagonal-hatch pattern for hidden ("mystery") liquid layers — built once since the
+// texture is static, unlike the shimmer overlay above.
+let hiddenHatchPattern = null;
+function getHiddenHatchPattern() {
+    if (hiddenHatchPattern) return hiddenHatchPattern;
+    const size = 12;
+    const off = document.createElement('canvas');
+    off.width = size;
+    off.height = size;
+    const octx = off.getContext('2d');
+    octx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+    octx.lineWidth = 2;
+    octx.beginPath();
+    octx.moveTo(0, size); octx.lineTo(size, 0);
+    octx.moveTo(-size / 2, size / 2); octx.lineTo(size / 2, -size / 2);
+    octx.moveTo(size / 2, size * 1.5); octx.lineTo(size * 1.5, size / 2);
+    octx.stroke();
+    hiddenHatchPattern = ctx.createPattern(off, 'repeat');
+    return hiddenHatchPattern;
+}
+
 function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -607,17 +777,17 @@ function draw() {
             let yPos = liquidBottom - (layerIdx + 1) * layerHeight;
 
             if (colorIdx === -1) {
-                ctx.fillStyle = '#e0e0e0';
+                ctx.fillStyle = 'rgba(140, 140, 150, 0.35)';
                 ctx.fillRect(-innerWidth / 2, yPos, innerWidth, layerHeight + 1);
-
-                ctx.fillStyle = '#555';
-                ctx.font = 'bold 16px sans-serif';
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText('?', 0, yPos + layerHeight / 2);
+                ctx.fillStyle = getHiddenHatchPattern();
+                ctx.fillRect(-innerWidth / 2, yPos, innerWidth, layerHeight + 1);
             } else {
                 ctx.fillStyle = COLORS[colorIdx] || '#fff';
                 ctx.fillRect(-innerWidth / 2, yPos, innerWidth, layerHeight + 1);
+                if (levelNumColors >= PATTERN_MIN_COLORS) {
+                    const emoji = PATTERNED_COLORS.get(colorIdx);
+                    if (emoji) drawShimmerPattern(emoji, -innerWidth / 2, yPos, innerWidth, layerHeight, elapsed, i, layerIdx);
+                }
             }
         }
         ctx.restore();
@@ -648,15 +818,15 @@ function draw() {
             ctx.stroke();
         }
 
-        // Draw Lock if tube is locked
+        // Draw Lock if tube is locked, with live progress toward the unlock condition
         if (tubeLocks[i]) {
             ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
             ctx.fillRect(-tubeWidth / 2, tubeHeight / 2 - 20, tubeWidth, 40);
             ctx.fillStyle = '#FFD700';
-            ctx.font = '20px sans-serif';
+            ctx.font = 'bold 13px sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText('🔒', 0, tubeHeight / 2);
+            ctx.fillText(`🔒 ${countCompletedTubes()}/${requiredCompletedTubes}`, 0, tubeHeight / 2);
         }
 
         ctx.restore();
@@ -683,6 +853,7 @@ function updateAndDrawPouring(layout) {
 
         // Check if any hidden layers are now exposed
         checkAndRevealHiddenLayers();
+        checkLockConditions();
 
         animating = false;
         pouringData = null;
@@ -707,19 +878,13 @@ function updateAndDrawPouring(layout) {
     }
 }
 
-// Reveal hidden layers automatically when top layers are poured out
+// Reveal hidden layers automatically when top layers are poured out. Works for any hidden
+// depth (2 or 3 layers), revealing each slot the instant it becomes the tube's top.
 function checkAndRevealHiddenLayers() {
-    for (let tIdx = 0; tIdx < tubes.length; tIdx++) {
-        if (hiddenColorMap.has(tIdx)) {
-            let tube = tubes[tIdx];
-            let hidden = hiddenColorMap.get(tIdx);
-            // If bottom layer 1 is -1 and index 1 is now top (length === 2) or empty
-            if (tube.length === 2 && tube[1] === -1) {
-                tube[1] = hidden[1];
-            }
-            if (tube.length === 1 && tube[0] === -1) {
-                tube[0] = hidden[0];
-            }
+    for (const [tIdx, hidden] of hiddenColorMap.entries()) {
+        const tube = tubes[tIdx];
+        while (tube.length > 0 && tube.length <= hidden.length && tube[tube.length - 1] === -1) {
+            tube[tube.length - 1] = hidden[tube.length - 1];
         }
     }
 }
