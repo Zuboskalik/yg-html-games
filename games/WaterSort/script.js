@@ -19,7 +19,9 @@ const locales = {
         restart: "Заново",
         lockHintSingular: "Заполните полностью ещё {n} колбу, чтобы снять замок",
         lockHintPlural: "Заполните полностью ещё {n} колбы, чтобы снять замок",
-        lockUnlockedToast: "🔓 Замок снят!"
+        lockUnlockedToast: "🔓 Замок снят!",
+        skinTube: "Колба",
+        skinBottle: "Бутылка"
     },
     en: {
         title: "Water Sort",
@@ -40,7 +42,9 @@ const locales = {
         restart: "Restart",
         lockHintSingular: "Fully sort {n} more tube to release the lock",
         lockHintPlural: "Fully sort {n} more tubes to release the lock",
-        lockUnlockedToast: "🔓 Lock released!"
+        lockUnlockedToast: "🔓 Lock released!",
+        skinTube: "Tube",
+        skinBottle: "Bottle"
     }
 };
 
@@ -62,24 +66,36 @@ let tubeLocks = []; // boolean array
 let moveLimit = null; // null or remaining moves
 let requiredCompletedTubes = 0; // how many OTHER tubes must be fully sorted to release the locks
 let levelNumColors = 0; // color count of the current level, used to gate the pattern overlay
+let particles = []; // celebratory particle effects fired when a patterned color's tube completes
 
 // Properly store original hidden colors during generation
 let hiddenColorMap = new Map(); // tubeIndex -> array of hidden colors
 
-// Colors palette
+// Colors palette — muted/varied rather than neon, spaced around the hue wheel. The first
+// 6 (indices 0-5) are introduced from level 1 and chosen to be maximally distinct alone;
+// indices 6-9 are only reached at higher levels and lean on PATTERNED_COLORS below once
+// they'd otherwise be too close to an earlier hue (e.g. pink vs purple, indigo vs blue).
 const COLORS = [
-    '#FF3366', '#33CCFF', '#33FF66', '#FFCC00',
-    '#9933FF', '#FF6600', '#00FFCC', '#FF99FF',
-    '#6666FF', '#CCFF33'
+    '#E05C5C', // 0 red
+    '#E3B23C', // 1 amber
+    '#4FAE6E', // 2 green
+    '#4A80D9', // 3 blue
+    '#8C63C9', // 4 purple
+    '#3FAFAF', // 5 teal
+    '#E0793D', // 6 orange
+    '#D9689D', // 7 pink       — close to purple(4)
+    '#6E6FCB', // 8 indigo     — close to blue(3)/purple(4)
+    '#A9C24A'  // 9 lime       — close to green(2)/amber(1)
 ];
 
-// Colors that read as too similar once many are on screen at once (cyan/green/teal/blue) get a
-// small shimmering emoji overlay instead of relying on hue alone to distinguish them.
+// Colors that read as too similar once many are on screen at once get a small shimmering
+// emoji overlay instead of relying on hue alone to distinguish them. Each emoji also drives
+// a matching particle effect when that color's tube is completed (see triggerColorEffect).
 const PATTERNED_COLORS = new Map([
-    [1, '❄️'],
-    [2, '🌸'],
-    [6, '💠'],
-    [8, '⭐']
+    [5, '❄️'], // teal
+    [7, '🌸'], // pink
+    [8, '💎'], // indigo
+    [9, '🍀']  // lime
 ]);
 const PATTERN_MIN_COLORS = 7; // only decorate once the board is crowded enough to actually confuse
 
@@ -122,7 +138,7 @@ const lockHintToast = document.getElementById('lockHintToast');
 // Quick-jump level buttons. Today (before a real progress system exists) every
 // milestone is always selectable for testing; once player progress is persisted,
 // gate each button on `milestone <= highestUnlockedLevel` instead of always-enabled.
-const LEVEL_MILESTONES = [1, 5, 10, 15, 20, 25, 30];
+const LEVEL_MILESTONES = [1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50];
 
 function renderLevelSelectButtons(container, onSelect) {
     container.innerHTML = '';
@@ -154,22 +170,136 @@ function updateLevelSelectHighlight() {
     });
 }
 
-// Tube skin (transparent glass overlay drawn on top of the liquid layers).
-// Swappable for future skins (flask/glass/bottle/etc. in images/water2.png..water5.png).
-const tubeSkin = new Image();
-let tubeSkinReady = false;
-const tubeSkinLoaded = new Promise(resolve => {
-    tubeSkin.onload = () => { tubeSkinReady = true; resolve(); };
-    tubeSkin.onerror = () => resolve();
-});
-tubeSkin.src = 'images/water1.png';
+// Clips the canvas to a straight tube's liquid channel (uniform width top to bottom,
+// rounded bottom corners) — used by the "tube" skin (images/water1.png). Fractions
+// measured from the PNG: the glass walls take up roughly a quarter of the width on
+// each side, and the straight part ends about 85% down before the rounded tip.
+function clipStraightChannel(tubeWidth, tubeHeight, p) {
+    const innerWidth = tubeWidth * (1 - p.marginXFrac * 2);
+    const top = tubeHeight * p.topFrac;
+    const bottom = tubeHeight * p.bottomFrac;
+    const radius = Math.min(innerWidth / 2, (bottom - top) * 0.25);
+    ctx.beginPath();
+    ctx.roundRect(-innerWidth / 2, top, innerWidth, bottom - top, [0, 0, radius, radius]);
+    ctx.clip();
+    return { top, bottom };
+}
 
-// Interior liquid channel of images/water1.png, measured as fractions of its full
-// bounding box: the glass walls take up roughly a quarter of the width on each side,
-// and the straight part of the tube ends about 85% down before the rounded bottom tip.
-const TUBE_LIQUID_MARGIN_X = 0.263;
-const TUBE_LIQUID_TOP = 0.075;
-const TUBE_LIQUID_BOTTOM = 0.94;
+// Clips to a bottle's liquid channel: a narrow neck, a diagonal shoulder taper, then a
+// wide rounded-bottom body — used by the "bottle" skin (images/water4.png). The clip only
+// needs to be a reasonable envelope of the transparent area, not pixel-exact: anywhere it
+// overlaps solid artwork (cap, shoulder outline) is simply painted over when the skin PNG
+// is drawn on top afterward, so slight generosity here is harmless.
+function clipBottleChannel(tubeWidth, tubeHeight, p) {
+    const neckHalfW = tubeWidth * (0.5 - p.neckMarginXFrac);
+    const bodyHalfW = tubeWidth * (0.5 - p.bodyMarginXFrac);
+    const neckTop = tubeHeight * p.neckTopFrac;
+    const taperTop = tubeHeight * p.taperTopFrac;
+    const taperBottom = tubeHeight * p.taperBottomFrac;
+    const bodyBottom = tubeHeight * p.bodyBottomFrac;
+    // The bottle's base is only gently rounded — a small corner radius, not a semicircle
+    // like the tube's — measured from the source art as ~10% of the container's width.
+    const radius = Math.min(bodyHalfW, tubeWidth * p.bottomRadiusFrac, (bodyBottom - taperBottom) * 0.5);
+
+    ctx.beginPath();
+    ctx.moveTo(-neckHalfW, neckTop);
+    ctx.lineTo(-neckHalfW, taperTop);
+    ctx.lineTo(-bodyHalfW, taperBottom);
+    ctx.lineTo(-bodyHalfW, bodyBottom - radius);
+    ctx.arcTo(-bodyHalfW, bodyBottom, -bodyHalfW + radius, bodyBottom, radius);
+    ctx.lineTo(bodyHalfW - radius, bodyBottom);
+    ctx.arcTo(bodyHalfW, bodyBottom, bodyHalfW, bodyBottom - radius, radius);
+    ctx.lineTo(bodyHalfW, taperBottom);
+    ctx.lineTo(neckHalfW, taperTop);
+    ctx.lineTo(neckHalfW, neckTop);
+    ctx.closePath();
+    ctx.clip();
+    return { top: neckTop, bottom: bodyBottom };
+}
+
+// Container skins. `unlocked`/`unlockLevel`/`unlockAd`/`unlockPrice` are placeholders for
+// a future unlock system (progress, rewarded ad, or IAP — exact mechanic TBD); today every
+// skin is simply unlocked. A locked skin would render dimmed with a 🔒 badge in the picker
+// (see updateSkinSelectionUI) and selectSkin() already refuses to switch to one, so wiring
+// in a real gate later is just a matter of flipping `unlocked` based on that mechanic.
+const SKINS = {
+    tube: {
+        id: 'tube',
+        labelKey: 'skinTube',
+        src: 'images/water1.png',
+        unlocked: true,
+        unlockLevel: null,
+        unlockAd: null,
+        unlockPrice: null,
+        clipLiquid: clipStraightChannel,
+        liquidParams: { marginXFrac: 0.263, topFrac: 0.075, bottomFrac: 0.94 }
+    },
+    bottle: {
+        id: 'bottle',
+        labelKey: 'skinBottle',
+        src: 'images/water4.png',
+        unlocked: true,
+        unlockLevel: null,
+        unlockAd: null,
+        unlockPrice: null,
+        clipLiquid: clipBottleChannel,
+        liquidParams: {
+            neckMarginXFrac: 0.36,
+            bodyMarginXFrac: 0.145,
+            neckTopFrac: 0.10,
+            taperTopFrac: 0.27,
+            taperBottomFrac: 0.40,
+            bodyBottomFrac: 0.94,
+            bottomRadiusFrac: 0.1 // small rounded corners, not a semicircle — a real bottle base
+        }
+    }
+};
+
+const SKIN_STORAGE_KEY = 'waterSortSkin';
+function loadSavedSkinId() {
+    try {
+        const saved = localStorage.getItem(SKIN_STORAGE_KEY);
+        if (saved && SKINS[saved] && SKINS[saved].unlocked) return saved;
+    } catch (e) { /* localStorage unavailable (private mode, etc.) — fall back below */ }
+    return 'tube';
+}
+let currentSkinId = loadSavedSkinId();
+
+function selectSkin(skinId) {
+    const skin = SKINS[skinId];
+    if (!skin || !skin.unlocked) return;
+    currentSkinId = skinId;
+    try { localStorage.setItem(SKIN_STORAGE_KEY, skinId); } catch (e) { /* ignore */ }
+    updateSkinSelectionUI();
+}
+
+const skinOptionButtons = document.querySelectorAll('.skin-option');
+skinOptionButtons.forEach(btn => {
+    btn.addEventListener('click', () => selectSkin(btn.dataset.skin));
+});
+
+function updateSkinSelectionUI() {
+    skinOptionButtons.forEach(btn => {
+        const skin = SKINS[btn.dataset.skin];
+        btn.classList.toggle('selected', btn.dataset.skin === currentSkinId);
+        btn.classList.toggle('locked', !skin.unlocked);
+        const lockBadge = btn.querySelector('[data-lock-badge]');
+        if (lockBadge) lockBadge.classList.toggle('hidden', skin.unlocked);
+    });
+}
+
+// Preload every skin's artwork up front (small PNGs, and the player can switch skins from
+// the main menu at any time) rather than only the currently-selected one.
+const skinImages = {};
+const skinImagesReady = {};
+const skinLoadPromises = Object.values(SKINS).map(skin => new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => { skinImagesReady[skin.id] = true; resolve(); };
+    img.onerror = () => resolve();
+    img.src = skin.src;
+    skinImages[skin.id] = img;
+}));
+const allSkinsLoaded = Promise.all(skinLoadPromises);
 
 document.addEventListener('contextmenu', e => e.preventDefault());
 
@@ -210,7 +340,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 loadProgress();
             }).catch(err => console.log('Offline player', err));
 
-            tubeSkinLoaded.then(() => {
+            allSkinsLoaded.then(() => {
                 ysdk.features.LoadingAPI?.ready();
             });
         }).catch(err => {
@@ -233,6 +363,10 @@ function updateUILanguage() {
     if (txtAddTube) txtAddTube.textContent = loc.addTube;
     if (txtRevealHidden) txtRevealHidden.textContent = loc.revealHidden;
     if (txtUnlockTube) txtUnlockTube.textContent = loc.unlockTube;
+    const txtSkinTube = document.getElementById('txt-skin-tube');
+    const txtSkinBottle = document.getElementById('txt-skin-bottle');
+    if (txtSkinTube) txtSkinTube.textContent = loc.skinTube;
+    if (txtSkinBottle) txtSkinBottle.textContent = loc.skinBottle;
     if (currentLevelPreview) currentLevelPreview.textContent = loc.level + (currentLevelIndex + 1);
     if (levelTitle) levelTitle.textContent = loc.level + (currentLevelIndex + 1);
     if (movesCountDisplay) movesCountDisplay.textContent = `🔄 ${movesCount}`;
@@ -246,6 +380,7 @@ function updateUILanguage() {
 
     updateActionButtonsVisibility();
     updateLevelSelectHighlight();
+    updateSkinSelectionUI();
 }
 
 // Show the reveal/unlock ad-buttons only while their mechanic is actually present on screen
@@ -294,38 +429,17 @@ function shuffleArray(arr) {
     return arr;
 }
 
-// Which tube indices get hidden layers, favoring even indices first (matches the original
-// "every other tube" pattern), extended to however many tubes the current tier needs.
-function computeHiddenTubeIndices(numColors, hiddenTubeCount) {
-    const evens = [], odds = [];
-    for (let c = 0; c < numColors; c++) (c % 2 === 0 ? evens : odds).push(c);
-    return evens.concat(odds).slice(0, hiddenTubeCount);
-}
-
-// The shuffle-then-chunk step below can trap some of a color's units inside a locked tube,
-// making that color impossible to ever fully sort while locked. Since the lock condition
-// requires fully sorting `requiredCompletedTubes` OTHER colors, we must guarantee that many
-// colors have ALL 4 of their units outside every locked tube. Swap any "safe" color unit that
-// landed in a locked tube for a non-safe unit from an unlocked tube. Must run on raw color
-// integers, before hidden-layer masking turns any slots into -1.
-function ensureSafeColorsOutsideLocks(currentTubes, lockedIndices, safeColors) {
-    for (const lockedIdx of lockedIndices) {
-        const tube = currentTubes[lockedIdx];
-        for (let slot = 0; slot < tube.length; slot++) {
-            if (!safeColors.has(tube[slot])) continue;
-            outer:
-            for (let otherIdx = 0; otherIdx < currentTubes.length; otherIdx++) {
-                if (lockedIndices.has(otherIdx)) continue;
-                const otherTube = currentTubes[otherIdx];
-                for (let otherSlot = 0; otherSlot < otherTube.length; otherSlot++) {
-                    if (!safeColors.has(otherTube[otherSlot])) {
-                        [tube[slot], otherTube[otherSlot]] = [otherTube[otherSlot], tube[slot]];
-                        break outer;
-                    }
-                }
-            }
-        }
+// Which tube indices get hidden layers. Scrambling redistributes content across ALL tube
+// slots — a tube's index no longer tells you how much is really in it — so candidates are
+// chosen by actual content: strictly more than `hiddenLayersPerTube` units, so masking the
+// bottom layers can never hide the whole tube and leave it with no visible top to pour from.
+function pickHiddenTubeIndices(tubes, hiddenTubeCount, hiddenLayersPerTube) {
+    const candidates = [];
+    for (let i = 0; i < tubes.length; i++) {
+        if (tubes[i].length > hiddenLayersPerTube) candidates.push(i);
     }
+    shuffleArray(candidates);
+    return candidates.slice(0, hiddenTubeCount);
 }
 
 function computeMoveLimit(levelIdx, numColors, hiddenLayerCount, lockedTubeCount) {
@@ -336,10 +450,78 @@ function computeMoveLimit(levelIdx, numColors, hiddenLayerCount, lockedTubeCount
     return Math.ceil((estimate * MOVE_LIMIT_MULTIPLIER) / MOVE_LIMIT_ROUND_TO) * MOVE_LIMIT_ROUND_TO;
 }
 
+// Builds a puzzle that is GUARANTEED solvable: start from the fully-sorted end state (one
+// color per tube, plus empties) and "unsolve" it by repeatedly moving a partial top run from
+// one tube to another. Moving only PART of a run (not necessarily draining it) is what makes
+// this safely reversible: the source tube's exposed top after the move is either the same
+// color (if any was left behind) or empty — both are legal pour-back targets — so replaying
+// the whole move log in reverse is always a 100% legal solve sequence for the real game rules.
+// Returns the scrambled tubes plus the log needed to compute solve order (see below).
+function buildSolvableTubes(numColors, capacity, numEmpty, scrambleMoves) {
+    const tubes = [];
+    for (let c = 0; c < numColors; c++) tubes.push(new Array(capacity).fill(c));
+    for (let i = 0; i < numEmpty; i++) tubes.push([]);
+
+    const log = [];
+    let performed = 0;
+    let attempts = 0;
+    const maxAttempts = scrambleMoves * 20;
+
+    while (performed < scrambleMoves && attempts < maxAttempts) {
+        attempts++;
+        const sources = [];
+        for (let i = 0; i < tubes.length; i++) if (tubes[i].length > 0) sources.push(i);
+        if (sources.length === 0) break;
+        const from = sources[Math.floor(Math.random() * sources.length)];
+        const fromTube = tubes[from];
+        const topColor = fromTube[fromTube.length - 1];
+        let runLen = 0;
+        for (let i = fromTube.length - 1; i >= 0 && fromTube[i] === topColor; i--) runLen++;
+
+        const dests = [];
+        for (let i = 0; i < tubes.length; i++) {
+            if (i === from) continue;
+            if (tubes[i].length < capacity) dests.push(i);
+        }
+        if (dests.length === 0) continue;
+        const to = dests[Math.floor(Math.random() * dests.length)];
+        const room = capacity - tubes[to].length;
+        const maxMove = Math.min(runLen, room);
+        if (maxMove < 1) continue;
+        const moveCount = 1 + Math.floor(Math.random() * maxMove);
+
+        for (let k = 0; k < moveCount; k++) tubes[to].push(fromTube.pop());
+        log.push({ from, to, count: moveCount });
+        performed++;
+    }
+
+    // Scrambling uses empty tubes as scratch space, so the final state isn't guaranteed to
+    // have any left empty. Guarantee at least `numEmpty` by undoing moves from the end (each
+    // undo is the same legal partial-run pour, just reversed) until enough are free — worst
+    // case this fully unwinds back to the pristine solved state, which trivially satisfies
+    // `numEmpty` by construction, so this always terminates successfully.
+    function countEmpty() {
+        let n = 0;
+        for (const t of tubes) if (t.length === 0) n++;
+        return n;
+    }
+    while (countEmpty() < numEmpty && log.length > 0) {
+        const mv = log.pop();
+        const src = tubes[mv.to];
+        const dst = tubes[mv.from];
+        for (let k = 0; k < mv.count; k++) dst.push(src.pop());
+    }
+
+    return { tubes, log };
+}
+
+
 // Level Generator with Level 3+ Hidden Layers and Level 7+ Locks & Level 10+ Bombs.
 // Difficulty keeps escalating past the point where numColors saturates at COLORS.length
-// (level 22+, already at the MAX_TUBES cap) via more/deeper hidden layers and more locks,
-// gated by `tier` — a step that advances every 4 levels past CAP_LEVEL_IDX.
+// (level 22+, already at the MAX_TUBES cap) via more/deeper hidden layers, gated by
+// `hiddenTier` — a step that advances every 4 levels past CAP_LEVEL_IDX. Locks grow on
+// their own, smoother schedule (`lockTier`, +1 lock every 6 levels from level 7) so the
+// count doesn't sit flat at 1 for a dozen levels and then jump straight to 3.
 function generateLevel(levelIdx) {
     const capacity = 4;
     const numEmpty = 2;
@@ -348,54 +530,68 @@ function generateLevel(levelIdx) {
 
     const hiddenEnabled = levelIdx >= 2;
     const lockEnabled = levelIdx >= 6;
-    const tier = Math.floor(Math.max(0, levelIdx - CAP_LEVEL_IDX) / 4);
+    const hiddenTier = Math.floor(Math.max(0, levelIdx - CAP_LEVEL_IDX) / 4);
+    const lockTier = lockEnabled ? Math.floor((levelIdx - 6) / 6) : 0;
 
-    const hiddenLayersPerTube = hiddenEnabled ? (tier >= 2 ? 3 : 2) : 0;
-    const hiddenTubeCount = hiddenEnabled ? Math.min(numColors, Math.ceil(numColors / 2) + tier) : 0;
-    const lockedTubeCount = lockEnabled ? Math.min(3, 1 + tier, numColors - 1) : 0;
+    const hiddenLayersPerTube = hiddenEnabled ? (hiddenTier >= 2 ? 3 : 2) : 0;
+    const hiddenTubeCount = hiddenEnabled ? Math.min(numColors, Math.ceil(numColors / 2) + hiddenTier) : 0;
+    const lockedTubeCount = lockEnabled ? Math.min(3, 1 + lockTier, numColors - 1) : 0;
 
-    let colorPool = [];
-    for (let c = 0; c < numColors; c++) {
-        for (let i = 0; i < capacity; i++) {
-            colorPool.push(c);
+    let currentTubes;
+    let lockedIndices = new Set();
+
+    if (lockedTubeCount > 0) {
+        // Generate the "safe" colors (needed to satisfy the unlock condition) and the
+        // "lockable" colors as two FULLY INDEPENDENT sub-puzzles, each with its own dedicated
+        // empty tube. This guarantees the safe colors are sortable start to finish without ever
+        // touching a locked tube — not just "their units happen to sit outside the locks"
+        // (which doesn't guarantee they're actually gatherable), but genuinely self-contained.
+        requiredCompletedTubes = Math.min(lockedTubeCount, Math.max(1, numColors - lockedTubeCount));
+        const safeColorCount = requiredCompletedTubes;
+        const lockableColorCount = numColors - safeColorCount;
+        const safeEmpty = 1;
+        const lockableEmpty = numEmpty - safeEmpty;
+
+        const safeGroup = buildSolvableTubes(safeColorCount, capacity, safeEmpty, Math.max(20, safeColorCount * capacity * 3)).tubes;
+        const lockableGroup = buildSolvableTubes(lockableColorCount, capacity, lockableEmpty, Math.max(20, lockableColorCount * capacity * 3)).tubes;
+
+        // Re-number the lockable group's colors so they don't collide with the safe group's.
+        for (const tube of lockableGroup) {
+            for (let i = 0; i < tube.length; i++) tube[i] += safeColorCount;
         }
-    }
-    shuffleArray(colorPool);
 
-    let currentTubes = [];
-    for (let c = 0; c < numColors; c++) {
-        currentTubes.push(colorPool.slice(c * capacity, (c + 1) * capacity));
+        // Concatenate whole groups as-is — scrambling (and the empty-count repair above)
+        // already redistributed content across EVERY slot in each group, so there's no fixed
+        // "first K are colors, rest are empties" split left to slice by position.
+        currentTubes = [...safeGroup, ...lockableGroup];
+
+        // Lock targets: any tube within the lockable group's own index range that actually has
+        // content — safe by construction, since that group never shares a tube (or a color)
+        // with the safe group.
+        const lockCandidates = [];
+        for (let i = safeGroup.length; i < currentTubes.length; i++) {
+            if (currentTubes[i].length > 0) lockCandidates.push(i);
+        }
+        shuffleArray(lockCandidates);
+        lockedIndices = new Set(lockCandidates.slice(0, Math.min(lockedTubeCount, lockCandidates.length)));
+    } else {
+        requiredCompletedTubes = 0;
+        currentTubes = buildSolvableTubes(numColors, capacity, numEmpty, Math.max(30, numColors * capacity * 3)).tubes;
     }
 
-    // Locks: pick unique random tube indices, then reserve enough "safe" colors that the
-    // unlock condition (fully sort `requiredCompletedTubes` other tubes) stays achievable.
-    tubeLocks = new Array(numColors).fill(false);
-    const lockedIndices = new Set(shuffleArray([...Array(numColors).keys()]).slice(0, lockedTubeCount));
+    tubeLocks = new Array(currentTubes.length).fill(false);
     for (const idx of lockedIndices) tubeLocks[idx] = true;
 
-    requiredCompletedTubes = lockedTubeCount === 0 ? 0
-        : Math.min(lockedTubeCount, Math.max(1, numColors - lockedTubeCount));
-
-    if (requiredCompletedTubes > 0) {
-        const safeColors = new Set(shuffleArray([...Array(numColors).keys()]).slice(0, requiredCompletedTubes));
-        ensureSafeColorsOutsideLocks(currentTubes, lockedIndices, safeColors);
-    }
-
-    // Hidden mystery layers, applied after the lock repair pass so -1 placeholders are never
-    // treated as swappable color units.
+    // Hidden mystery layers, applied last so -1 placeholders never interfere with the
+    // group-splitting/re-numbering above (which needs real color values throughout).
     hiddenColorMap.clear();
     if (hiddenEnabled) {
-        for (const c of computeHiddenTubeIndices(numColors, hiddenTubeCount)) {
+        for (const c of pickHiddenTubeIndices(currentTubes, hiddenTubeCount, hiddenLayersPerTube)) {
             const tubeColors = currentTubes[c];
             const hidden = tubeColors.slice(0, hiddenLayersPerTube);
             hiddenColorMap.set(c, hidden);
             for (let i = 0; i < hiddenLayersPerTube; i++) tubeColors[i] = -1;
         }
-    }
-
-    for (let i = 0; i < numEmpty; i++) {
-        currentTubes.push([]);
-        tubeLocks.push(false);
     }
 
     const hiddenLayerCount = hiddenTubeCount * hiddenLayersPerTube;
@@ -411,6 +607,7 @@ function startLevel() {
     animating = false;
     pouringData = null;
     movesCount = 0;
+    particles = [];
     lockHintToast.classList.remove('visible');
     clearTimeout(lockHintTimer);
     updateUILanguage();
@@ -617,6 +814,13 @@ restartLevelBtn.addEventListener('click', () => {
     startLevel();
 });
 
+// Return to the main menu mid-game (e.g. to pick a different container skin). Reuses the
+// existing main-menu overlay — pressing "Играть" there simply restarts the current level.
+const openMenuBtn = document.getElementById('open-menu-btn');
+openMenuBtn.addEventListener('click', () => {
+    mainMenu.classList.remove('hidden');
+});
+
 canvas.addEventListener('pointerdown', (e) => {
     if (isPaused || animating || !mainMenu.classList.contains('hidden') || !victoryModal.classList.contains('hidden') || !defeatModal.classList.contains('hidden')) return;
 
@@ -739,6 +943,136 @@ function getHiddenHatchPattern() {
     return hiddenHatchPattern;
 }
 
+// Celebratory particle effects, one style per patterned emoji, fired once when a tube of
+// that color is completed (see triggerColorEffect, called from updateAndDrawPouring).
+function spawnParticles(list) {
+    const now = performance.now();
+    for (const p of list) particles.push({ ...p, spawnTime: now });
+}
+
+function spawnSnowfall() {
+    const list = [];
+    for (let i = 0; i < 24; i++) {
+        list.push({
+            emoji: '❄️',
+            x: Math.random() * canvas.width,
+            y: -20 - Math.random() * 120,
+            vx: (Math.random() - 0.5) * 20,
+            vy: 70 + Math.random() * 50,
+            size: 16 + Math.random() * 10,
+            rotSpeed: (Math.random() - 0.5) * 2,
+            maxLife: 2600 + Math.random() * 800
+        });
+    }
+    spawnParticles(list);
+}
+
+function spawnFlowerRise() {
+    const list = [];
+    for (let i = 0; i < 20; i++) {
+        list.push({
+            emoji: '🌸',
+            x: Math.random() * canvas.width,
+            y: canvas.height + 20 + Math.random() * 60,
+            vx: (Math.random() - 0.5) * 30,
+            vy: -(70 + Math.random() * 50),
+            size: 18 + Math.random() * 10,
+            rotSpeed: (Math.random() - 0.5) * 3,
+            maxLife: 2200 + Math.random() * 600
+        });
+    }
+    spawnParticles(list);
+}
+
+function spawnCrystalBurst(cx, cy) {
+    const list = [];
+    const count = 18;
+    for (let i = 0; i < count; i++) {
+        const angle = (Math.PI * 2 * i) / count + Math.random() * 0.3;
+        const speed = 90 + Math.random() * 110;
+        list.push({
+            emoji: '💎',
+            x: cx,
+            y: cy,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            size: 16 + Math.random() * 8,
+            rotSpeed: (Math.random() - 0.5) * 4,
+            maxLife: 900 + Math.random() * 300
+        });
+    }
+    spawnParticles(list);
+}
+
+function spawnCloverSpiral(cx, cy) {
+    const list = [];
+    const count = 16;
+    for (let i = 0; i < count; i++) {
+        list.push({
+            emoji: '🍀',
+            x: cx,
+            y: cy,
+            angle: (Math.PI * 2 * i) / count,
+            spiralSpeed: 70 + Math.random() * 40,
+            vy: -(30 + Math.random() * 30),
+            size: 16 + Math.random() * 8,
+            rotSpeed: (Math.random() - 0.5) * 3,
+            maxLife: 1500 + Math.random() * 400,
+            kind: 'spiral'
+        });
+    }
+    spawnParticles(list);
+}
+
+// Fires the effect matching a completed tube's color, anchored at that tube's on-screen
+// position (screen-wide effects like snowfall/flower-rise ignore x/y). Only fires once the
+// pattern overlay itself is actually visible (levelNumColors >= PATTERN_MIN_COLORS) so the
+// effect always corresponds to a mark the player actually saw on the liquid.
+function triggerColorEffect(colorIdx, x, y) {
+    if (levelNumColors < PATTERN_MIN_COLORS) return;
+    const emoji = PATTERNED_COLORS.get(colorIdx);
+    if (emoji === '❄️') spawnSnowfall();
+    else if (emoji === '🌸') spawnFlowerRise();
+    else if (emoji === '💎') spawnCrystalBurst(x, y);
+    else if (emoji === '🍀') spawnCloverSpiral(x, y);
+}
+
+function updateAndDrawParticles() {
+    if (particles.length === 0) return;
+    const now = performance.now();
+    particles = particles.filter(p => (now - p.spawnTime) < p.maxLife);
+
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const p of particles) {
+        const age = now - p.spawnTime;
+        const t = age / 1000;
+        let x, y;
+        if (p.kind === 'spiral') {
+            const angle = p.angle + t * (p.spiralSpeed / 30);
+            const radius = t * p.spiralSpeed;
+            x = p.x + Math.cos(angle) * radius;
+            y = p.y + Math.sin(angle) * radius + p.vy * t;
+        } else {
+            x = p.x + p.vx * t;
+            y = p.y + p.vy * t;
+        }
+
+        const lifeFrac = age / p.maxLife;
+        const alpha = lifeFrac < 0.75 ? 1 : Math.max(0, 1 - (lifeFrac - 0.75) / 0.25);
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.translate(x, y);
+        ctx.rotate(t * (p.rotSpeed || 0));
+        ctx.font = `${p.size}px sans-serif`;
+        ctx.fillText(p.emoji, 0, 0);
+        ctx.restore();
+    }
+    ctx.restore();
+}
+
 function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -758,19 +1092,16 @@ function draw() {
         ctx.save();
         ctx.translate(pos.x, pos.y + bounceY);
 
-        // Liquid is confined to the transparent channel inside the tube skin artwork,
-        // not the full bounding box, so it reads as being inside the glass, not under it.
-        let innerWidth = tubeWidth * (1 - TUBE_LIQUID_MARGIN_X * 2);
-        let liquidTop = tubeHeight * TUBE_LIQUID_TOP;
-        let liquidBottom = tubeHeight * TUBE_LIQUID_BOTTOM;
-        let innerHeight = liquidBottom - liquidTop;
-        let layerHeight = innerHeight / 4;
-        let liquidRadius = Math.min(innerWidth / 2, innerHeight * 0.25);
+        // Liquid is clipped to the current skin's transparent channel, not the full bounding
+        // box, so it reads as being inside the glass, not under it. The clip shape itself
+        // (straight tube vs. narrow-necked bottle) does the work of following the container's
+        // silhouette — each layer just fills a full-width band and gets masked by it.
+        const skin = SKINS[currentSkinId];
+        const bandHalfWidth = tubeWidth / 2;
 
         ctx.save();
-        ctx.beginPath();
-        ctx.roundRect(-innerWidth / 2, liquidTop, innerWidth, innerHeight, [0, 0, liquidRadius, liquidRadius]);
-        ctx.clip();
+        const { top: liquidTop, bottom: liquidBottom } = skin.clipLiquid(tubeWidth, tubeHeight, skin.liquidParams);
+        let layerHeight = (liquidBottom - liquidTop) / 4;
 
         for (let layerIdx = 0; layerIdx < tubeData.length; layerIdx++) {
             let colorIdx = tubeData[layerIdx];
@@ -778,22 +1109,23 @@ function draw() {
 
             if (colorIdx === -1) {
                 ctx.fillStyle = 'rgba(140, 140, 150, 0.35)';
-                ctx.fillRect(-innerWidth / 2, yPos, innerWidth, layerHeight + 1);
+                ctx.fillRect(-bandHalfWidth, yPos, bandHalfWidth * 2, layerHeight + 1);
                 ctx.fillStyle = getHiddenHatchPattern();
-                ctx.fillRect(-innerWidth / 2, yPos, innerWidth, layerHeight + 1);
+                ctx.fillRect(-bandHalfWidth, yPos, bandHalfWidth * 2, layerHeight + 1);
             } else {
                 ctx.fillStyle = COLORS[colorIdx] || '#fff';
-                ctx.fillRect(-innerWidth / 2, yPos, innerWidth, layerHeight + 1);
+                ctx.fillRect(-bandHalfWidth, yPos, bandHalfWidth * 2, layerHeight + 1);
                 if (levelNumColors >= PATTERN_MIN_COLORS) {
                     const emoji = PATTERNED_COLORS.get(colorIdx);
-                    if (emoji) drawShimmerPattern(emoji, -innerWidth / 2, yPos, innerWidth, layerHeight, elapsed, i, layerIdx);
+                    if (emoji) drawShimmerPattern(emoji, -bandHalfWidth, yPos, bandHalfWidth * 2, layerHeight, elapsed, i, layerIdx);
                 }
             }
         }
         ctx.restore();
 
-        // Draw tube skin (transparent glass PNG) on top of the poured liquid
-        if (tubeSkinReady) {
+        // Draw the container skin (transparent glass/bottle PNG) on top of the poured liquid
+        const skinImg = skinImages[currentSkinId];
+        if (skinImagesReady[currentSkinId]) {
             ctx.save();
             if (isSelected) {
                 ctx.shadowColor = '#00ffcc';
@@ -802,7 +1134,7 @@ function draw() {
                 ctx.shadowColor = COLORS[tubeData[0]] || '#fff';
                 ctx.shadowBlur = 12;
             }
-            ctx.drawImage(tubeSkin, -tubeWidth / 2, 0, tubeWidth, tubeHeight);
+            ctx.drawImage(skinImg, -tubeWidth / 2, 0, tubeWidth, tubeHeight);
             ctx.restore();
         } else {
             // Fallback outline while the skin image hasn't loaded yet
@@ -835,6 +1167,8 @@ function draw() {
     if (animating && pouringData) {
         updateAndDrawPouring(layout);
     }
+
+    updateAndDrawParticles();
 }
 
 function updateAndDrawPouring(layout) {
@@ -846,7 +1180,8 @@ function updateAndDrawPouring(layout) {
         pouringData.progress += 0.08;
     }
     if (pouringData.progress >= 1) {
-        let toTube = tubes[pouringData.toIdx];
+        const toIdx = pouringData.toIdx;
+        let toTube = tubes[toIdx];
         for (let color of pouringData.movingBlock) {
             toTube.push(color);
         }
@@ -854,6 +1189,11 @@ function updateAndDrawPouring(layout) {
         // Check if any hidden layers are now exposed
         checkAndRevealHiddenLayers();
         checkLockConditions();
+
+        if (isTubeComplete(toTube)) {
+            const pos = tubesPos[toIdx];
+            triggerColorEffect(toTube[0], pos.x, pos.y + tubeHeight / 2);
+        }
 
         animating = false;
         pouringData = null;

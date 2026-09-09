@@ -16,6 +16,7 @@
         <!-- HUD -->
         <div id="hud">
             <div class="hud-group">
+                <button class="menu-icon-btn" id="open-menu-btn" title="Меню">☰</button>
                 <div id="level-title">Уровень 1</div>
                 <div id="level-select"></div>
             </div>
@@ -55,6 +56,18 @@
                 <div class="level-preview-row">
                     <div id="current-level-preview" class="level-badge">Уровень 1</div>
                     <div id="menu-level-select"></div>
+                </div>
+                <div class="skin-select-row" id="skin-select-row">
+                    <button class="skin-option" type="button" data-skin="tube">
+                        <img src="images/water1.png" alt="">
+                        <span class="skin-option-label" id="txt-skin-tube">Колба</span>
+                        <span class="skin-lock-badge hidden" data-lock-badge>🔒</span>
+                    </button>
+                    <button class="skin-option" type="button" data-skin="bottle">
+                        <img src="images/water4.png" alt="">
+                        <span class="skin-option-label" id="txt-skin-bottle">Бутылка</span>
+                        <span class="skin-lock-badge hidden" data-lock-badge>🔒</span>
+                    </button>
                 </div>
                 <button class="btn" id="start-btn">Играть</button>
             </div>

@@ -57,12 +57,35 @@ canvas {
     align-items: center;
 }
 
+/* Return-to-menu button (top-left, in-game only) */
+.menu-icon-btn {
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: #fff;
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    pointer-events: auto;
+    text-shadow: none;
+    flex-shrink: 0;
+}
+
+.menu-icon-btn:active {
+    transform: scale(0.92);
+    background: rgba(255, 255, 255, 0.25);
+}
+
 /* Level select (jump straight to a milestone level, e.g. for testing progress) */
 #level-select {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
     align-items: center;
     pointer-events: auto;
+    max-width: 60vw;
 }
 
 .level-select-btn {
@@ -255,6 +278,78 @@ canvas {
 
 #menu-level-select {
     display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
     gap: 6px;
     align-items: center;
+}
+
+/* Container skin picker */
+.skin-select-row {
+    display: flex;
+    justify-content: center;
+    gap: 14px;
+    margin-bottom: 15px;
+}
+
+.skin-option {
+    position: relative;
+    background: rgba(255, 255, 255, 0.06);
+    border: 2px solid rgba(255, 255, 255, 0.15);
+    border-radius: 14px;
+    padding: 10px 14px 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+}
+
+.skin-option img {
+    width: 36px;
+    height: auto;
+    display: block;
+    pointer-events: none;
+}
+
+.skin-option-label {
+    font-size: 12px;
+    color: #ccc;
+}
+
+.skin-option:active {
+    transform: scale(0.96);
+}
+
+.skin-option.selected {
+    border-color: #00ffcc;
+    background: rgba(0, 255, 204, 0.12);
+}
+
+.skin-option.selected .skin-option-label {
+    color: #00ffcc;
+}
+
+.skin-option.locked {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.skin-lock-badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    font-size: 13px;
+    background: rgba(20, 20, 20, 0.9);
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.skin-lock-badge.hidden {
+    display: none;
 }
