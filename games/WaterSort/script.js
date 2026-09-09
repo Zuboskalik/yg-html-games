@@ -450,19 +450,21 @@ function computeMoveLimit(levelIdx, numColors, hiddenLayerCount, lockedTubeCount
     return Math.ceil((estimate * MOVE_LIMIT_MULTIPLIER) / MOVE_LIMIT_ROUND_TO) * MOVE_LIMIT_ROUND_TO;
 }
 
-// Builds a puzzle that is GUARANTEED solvable: start from the fully-sorted end state (one
-// color per tube, plus empties) and "unsolve" it by repeatedly moving a partial top run from
-// one tube to another. Moving only PART of a run (not necessarily draining it) is what makes
-// this safely reversible: the source tube's exposed top after the move is either the same
-// color (if any was left behind) or empty — both are legal pour-back targets — so replaying
-// the whole move log in reverse is always a 100% legal solve sequence for the real game rules.
-// Returns the scrambled tubes plus the log needed to compute solve order (see below).
+// Builds a scrambled-but-solvable puzzle: start from the fully-sorted end state (one color
+// per tube, plus `numEmpty` empty ones) and "unsolve" it with random legal-style pours (a
+// contiguous top-color run moved onto a tube with room). This alone scrambles perfectly well
+// (verified: run-count — a proxy for how mixed the tubes are — stays high regardless of
+// numColors), but it almost NEVER happens to end with any tube empty by chance once numColors
+// is more than ~2 or 3 — with only `numEmpty` tubes of scratch room, the random walk disperses
+// content and rarely revisits a fully-empty state. So: scramble freely first (no constraint),
+// then directedly drain however many of the least-full tubes are needed — via the same kind
+// of ordinary pour, matching top color preferred — to guarantee at least `numEmpty` empty
+// tubes at the end, without touching the array size or undoing the scramble itself.
 function buildSolvableTubes(numColors, capacity, numEmpty, scrambleMoves) {
     const tubes = [];
     for (let c = 0; c < numColors; c++) tubes.push(new Array(capacity).fill(c));
     for (let i = 0; i < numEmpty; i++) tubes.push([]);
 
-    const log = [];
     let performed = 0;
     let attempts = 0;
     const maxAttempts = scrambleMoves * 20;
@@ -491,28 +493,64 @@ function buildSolvableTubes(numColors, capacity, numEmpty, scrambleMoves) {
         const moveCount = 1 + Math.floor(Math.random() * maxMove);
 
         for (let k = 0; k < moveCount; k++) tubes[to].push(fromTube.pop());
-        log.push({ from, to, count: moveCount });
         performed++;
     }
 
-    // Scrambling uses empty tubes as scratch space, so the final state isn't guaranteed to
-    // have any left empty. Guarantee at least `numEmpty` by undoing moves from the end (each
-    // undo is the same legal partial-run pour, just reversed) until enough are free — worst
-    // case this fully unwinds back to the pristine solved state, which trivially satisfies
-    // `numEmpty` by construction, so this always terminates successfully.
+    // Guarantee at least `numEmpty` empty tubes: drain the least-full NON-empty tubes (as
+    // many as still needed) completely via ordinary pours — matching top color preferred, any
+    // tube with room otherwise. Re-checks the ACTUAL empty count each iteration (rather than
+    // trusting a manual decrement) so a rare "wash" — the fallback search using an already-
+    // empty tube as the destination, which just relocates the emptiness with no net gain —
+    // can't fool the loop into stopping early.
     function countEmpty() {
         let n = 0;
         for (const t of tubes) if (t.length === 0) n++;
         return n;
     }
-    while (countEmpty() < numEmpty && log.length > 0) {
-        const mv = log.pop();
-        const src = tubes[mv.to];
-        const dst = tubes[mv.from];
-        for (let k = 0; k < mv.count; k++) dst.push(src.pop());
+    if (countEmpty() < numEmpty) {
+        const order = tubes
+            .map((t, i) => i)
+            .filter(i => tubes[i].length > 0)
+            .sort((a, b) => tubes[a].length - tubes[b].length);
+
+        for (const idx of order) {
+            if (countEmpty() >= numEmpty) break;
+            if (tubes[idx].length === 0) continue;
+            while (tubes[idx].length > 0) {
+                const topColor = tubes[idx][tubes[idx].length - 1];
+                let runLen = 0;
+                for (let i = tubes[idx].length - 1; i >= 0 && tubes[idx][i] === topColor; i--) runLen++;
+
+                // Both searches deliberately exclude already-empty tubes: pouring into one of
+                // those would just relocate which tube is empty rather than create a NEW one,
+                // leaving the total empty count unchanged (the bug this whole phase exists to
+                // avoid). Only fall back to an empty tube if truly nothing else has room.
+                let dest = -1;
+                for (let i = 0; i < tubes.length; i++) {
+                    if (i === idx || tubes[i].length === 0) continue;
+                    if (tubes[i].length < capacity && tubes[i][tubes[i].length - 1] === topColor) { dest = i; break; }
+                }
+                if (dest === -1) {
+                    for (let i = 0; i < tubes.length; i++) {
+                        if (i === idx || tubes[i].length === 0) continue;
+                        if (tubes[i].length < capacity) { dest = i; break; }
+                    }
+                }
+                if (dest === -1) {
+                    for (let i = 0; i < tubes.length; i++) {
+                        if (i === idx) continue;
+                        if (tubes[i].length < capacity) { dest = i; break; }
+                    }
+                }
+                if (dest === -1) break; // shouldn't happen — total empty capacity always leaves slack
+                const room = capacity - tubes[dest].length;
+                const moveCount = Math.min(runLen, room, tubes[idx].length);
+                for (let k = 0; k < moveCount; k++) tubes[dest].push(tubes[idx].pop());
+            }
+        }
     }
 
-    return { tubes, log };
+    return { tubes };
 }
 
 
@@ -608,12 +646,25 @@ function startLevel() {
     pouringData = null;
     movesCount = 0;
     particles = [];
+    victoryTriggered = false;
     lockHintToast.classList.remove('visible');
     clearTimeout(lockHintTimer);
     updateUILanguage();
     mainMenu.classList.add('hidden');
     victoryModal.classList.add('hidden');
     defeatModal.classList.add('hidden');
+}
+
+// Centralized win check — call after ANY action that could newly complete the level, not
+// just a pour (revealing hidden layers or unlocking via ad can also finish it). Guarded by
+// `victoryTriggered` so the fullscreen ad in triggerVictory() only ever fires once per level.
+let victoryTriggered = false;
+function checkVictory() {
+    if (victoryTriggered || animating) return;
+    if (isLevelSolved(tubes)) {
+        victoryTriggered = true;
+        triggerVictory();
+    }
 }
 
 // Check if level is solved
@@ -671,6 +722,7 @@ function checkLockConditions() {
         tubeLocks = tubeLocks.map(() => false);
         showToast(locales[currentLang].lockUnlockedToast);
         updateUILanguage();
+        checkVictory();
     }
 }
 
@@ -787,6 +839,7 @@ revealHiddenBtn.addEventListener('click', () => {
         hiddenColorMap.clear();
         selectedTubeIndex = null;
         updateUILanguage();
+        checkVictory();
     });
 });
 
@@ -799,6 +852,7 @@ unlockTubeBtn.addEventListener('click', () => {
         tubeLocks = tubeLocks.map(() => false);
         selectedTubeIndex = null;
         updateUILanguage();
+        checkVictory();
     });
 });
 
@@ -945,22 +999,30 @@ function getHiddenHatchPattern() {
 
 // Celebratory particle effects, one style per patterned emoji, fired once when a tube of
 // that color is completed (see triggerColorEffect, called from updateAndDrawPouring).
+// All particles share one fixed font size (see PARTICLE_FONT_SIZE) and never rotate, so
+// updateAndDrawParticles can set ctx.font ONCE per frame instead of once per particle —
+// per-particle ctx.font changes (and the save/restore+rotate that used to go with them) were
+// the actual cause of the frame-rate drop during effects, not the particle count itself.
+const PARTICLE_FONT_SIZE = 20;
+const MAX_PARTICLES = 120; // hard cap in case several bursts overlap in quick succession
+
 function spawnParticles(list) {
     const now = performance.now();
     for (const p of list) particles.push({ ...p, spawnTime: now });
+    if (particles.length > MAX_PARTICLES) {
+        particles.splice(0, particles.length - MAX_PARTICLES);
+    }
 }
 
 function spawnSnowfall() {
     const list = [];
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < 18; i++) {
         list.push({
             emoji: '❄️',
             x: Math.random() * canvas.width,
             y: -20 - Math.random() * 120,
             vx: (Math.random() - 0.5) * 20,
             vy: 70 + Math.random() * 50,
-            size: 16 + Math.random() * 10,
-            rotSpeed: (Math.random() - 0.5) * 2,
             maxLife: 2600 + Math.random() * 800
         });
     }
@@ -969,15 +1031,13 @@ function spawnSnowfall() {
 
 function spawnFlowerRise() {
     const list = [];
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 16; i++) {
         list.push({
             emoji: '🌸',
             x: Math.random() * canvas.width,
             y: canvas.height + 20 + Math.random() * 60,
             vx: (Math.random() - 0.5) * 30,
             vy: -(70 + Math.random() * 50),
-            size: 18 + Math.random() * 10,
-            rotSpeed: (Math.random() - 0.5) * 3,
             maxLife: 2200 + Math.random() * 600
         });
     }
@@ -986,7 +1046,7 @@ function spawnFlowerRise() {
 
 function spawnCrystalBurst(cx, cy) {
     const list = [];
-    const count = 18;
+    const count = 14;
     for (let i = 0; i < count; i++) {
         const angle = (Math.PI * 2 * i) / count + Math.random() * 0.3;
         const speed = 90 + Math.random() * 110;
@@ -996,8 +1056,6 @@ function spawnCrystalBurst(cx, cy) {
             y: cy,
             vx: Math.cos(angle) * speed,
             vy: Math.sin(angle) * speed,
-            size: 16 + Math.random() * 8,
-            rotSpeed: (Math.random() - 0.5) * 4,
             maxLife: 900 + Math.random() * 300
         });
     }
@@ -1006,7 +1064,7 @@ function spawnCrystalBurst(cx, cy) {
 
 function spawnCloverSpiral(cx, cy) {
     const list = [];
-    const count = 16;
+    const count = 12;
     for (let i = 0; i < count; i++) {
         list.push({
             emoji: '🍀',
@@ -1015,8 +1073,6 @@ function spawnCloverSpiral(cx, cy) {
             angle: (Math.PI * 2 * i) / count,
             spiralSpeed: 70 + Math.random() * 40,
             vy: -(30 + Math.random() * 30),
-            size: 16 + Math.random() * 8,
-            rotSpeed: (Math.random() - 0.5) * 3,
             maxLife: 1500 + Math.random() * 400,
             kind: 'spiral'
         });
@@ -1041,10 +1097,15 @@ function updateAndDrawParticles() {
     if (particles.length === 0) return;
     const now = performance.now();
     particles = particles.filter(p => (now - p.spawnTime) < p.maxLife);
+    if (particles.length === 0) return;
 
+    // One save/restore and one font assignment for the WHOLE batch — see PARTICLE_FONT_SIZE
+    // comment above for why per-particle font/rotation was the actual perf cost, not the
+    // particle count.
     ctx.save();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    ctx.font = `${PARTICLE_FONT_SIZE}px sans-serif`;
     for (const p of particles) {
         const age = now - p.spawnTime;
         const t = age / 1000;
@@ -1061,15 +1122,10 @@ function updateAndDrawParticles() {
 
         const lifeFrac = age / p.maxLife;
         const alpha = lifeFrac < 0.75 ? 1 : Math.max(0, 1 - (lifeFrac - 0.75) / 0.25);
-
-        ctx.save();
         ctx.globalAlpha = alpha;
-        ctx.translate(x, y);
-        ctx.rotate(t * (p.rotSpeed || 0));
-        ctx.font = `${p.size}px sans-serif`;
-        ctx.fillText(p.emoji, 0, 0);
-        ctx.restore();
+        ctx.fillText(p.emoji, x, y);
     }
+    ctx.globalAlpha = 1;
     ctx.restore();
 }
 
@@ -1198,9 +1254,7 @@ function updateAndDrawPouring(layout) {
         animating = false;
         pouringData = null;
 
-        if (isLevelSolved(tubes)) {
-            triggerVictory();
-        }
+        checkVictory();
     } else {
         let p = pouringData.progress;
         let startX = fromPos.x;
